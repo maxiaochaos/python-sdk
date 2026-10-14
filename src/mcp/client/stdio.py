@@ -147,10 +147,15 @@ async def stdio_client(
             async with read_stream_writer:
                 try:
                     # One line at a time; no read-ahead while a delivery is blocked.
-                    buffer = ""
+                    # Pieces of an unfinished line are joined only when a chunk
+                    # contains a newline, so one large line is not recopied per chunk.
+                    parts: list[str] = []
                     async for chunk in stdout:
-                        lines = (buffer + chunk).split("\n")
-                        buffer = lines.pop()
+                        if "\n" not in chunk:
+                            parts.append(chunk)
+                            continue
+                        lines = ("".join(parts) + chunk).split("\n")
+                        parts = [lines.pop()]
                         for line in lines:
                             try:
                                 await read_stream_writer.send(_parse_line(line))

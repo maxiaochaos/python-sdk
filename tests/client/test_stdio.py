@@ -278,6 +278,37 @@ async def test_messages_split_and_packed_across_chunks_are_reframed(monkeypatch:
 
 
 @pytest.mark.anyio
+async def test_a_large_line_split_across_many_chunks_is_delivered_whole(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A single JSON line split across many chunks is delivered whole.
+
+    SDK behaviour (issue #3699): unfinished pieces are kept and joined when a
+    newline arrives, including when that same chunk also carries the next message.
+    """
+    payload = "x" * (128 * 1024)
+    big = JSONRPCResponse(jsonrpc="2.0", id=1, result={"text": payload})
+    following = JSONRPCRequest(jsonrpc="2.0", id=2, method="ping")
+    process = FakeProcess(on_stdin_close=lambda: process.exit(0))
+
+    install_fake_process(monkeypatch, process)
+
+    wire = _line(big)
+    # The only newline is the framing terminator, so every chunk but the last
+    # is an unfinished piece of this one line.
+    assert wire.endswith(b"\n")
+    assert b"\n" not in wire[:-1]
+
+    with anyio.fail_after(5):
+        async with stdio_client(FAKE_PARAMS) as (read_stream, _):
+            head = wire[:-1]
+            for start in range(0, len(head), 128):
+                await process.feed(head[start : start + 128])
+            await process.feed(b"\n" + _line(following))
+
+            assert await _next_message(read_stream) == big
+            assert await _next_message(read_stream) == following
+
+
+@pytest.mark.anyio
 async def test_each_outgoing_message_is_written_as_exactly_one_line(monkeypatch: pytest.MonkeyPatch) -> None:
     """Client -> server framing writes one line per message.
 
